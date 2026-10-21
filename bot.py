@@ -32,7 +32,7 @@ from admin_handlers import (
 )
 
 # Configuration
-BOT_TOKEN = os.getenv("BOT_TOKEN", "7595834627:AAGM5tBOG7z-FyCqYU7rZV2XV1Y27eF-a2Y")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8601428470:AAGRq2X72f9RTu77ou8j1ioHHRwkQ9r1Khc")
 MAX_FILE_SIZE = 200 * 1024 * 1024  # 200MB
 DOWNLOAD_TIMEOUT = 300  # 5 minutes
 TEMP_DIR = "temp_downloads"
