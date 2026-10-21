@@ -2,10 +2,11 @@ import os
 import logging
 
 # Bot configuration
-BOT_TOKEN = os.getenv("BOT_TOKEN", "7595834627:AAGM5tBOG7z-FyCqYU7rZV2XV1Y27eF-a2Y")
-MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB - Telegram's limit for bots
-DOWNLOAD_TIMEOUT = 300  # 5 minutes
-TEMP_DIR = "temp_downloads"
+# NEVER hardcode Telegram tokens in source files. Store them as environment variables.
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+MAX_FILE_SIZE = 20 * 1024 * 1024  # 20MB to keep resource usage low and avoid free-plan overload
+DOWNLOAD_TIMEOUT = 150  # 2.5 minutes per download
+TEMP_DIR = os.getenv("TEMP_DIR", "temp_downloads")
 
 # Logging configuration
 logging.basicConfig(
@@ -21,5 +22,5 @@ SUPPORTED_PLATFORMS = [
     'reddit.com', 'twitch.tv'
 ]
 
-# Video quality preferences
-VIDEO_QUALITY = 'best[height<=720]/best'  # Prefer 720p or lower to reduce file size
+# Video quality preferences - lower quality to reduce file size and server usage
+VIDEO_QUALITY = 'best[height<=480]/best'

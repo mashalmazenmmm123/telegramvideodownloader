@@ -1,79 +1,497 @@
 #!/usr/bin/env python3
 """
-Telegram Video Downloader Bot
-Entry point for running the bot
+Telegram Video Downloader Bot - Professional Edition
+Advanced bot with admin system, user management, and premium features
+Production-ready for deployment on free cloud platforms
 """
 
-import asyncio
-import sys
 import os
-from main import main
+import asyncio
+import logging
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+from telegram.constants import ParseMode
+import yt_dlp
+from concurrent.futures import ThreadPoolExecutor
+import shutil
+from urllib.parse import urlparse, unquote
+import re
+import requests
+import urllib3
+from datetime import datetime
 
-def check_dependencies():
-    """Check if all required dependencies are available."""
-    required_modules = ['telegram', 'yt_dlp']
-    missing_modules = []
-    
-    for module in required_modules:
+# Import configuration
+from config import BOT_TOKEN, MAX_FILE_SIZE, DOWNLOAD_TIMEOUT, TEMP_DIR
+
+# Disable SSL warnings for file hosting services with certificate issues
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Import database models and admin handlers
+from models import init_db, get_db, User, Download, AdminLog
+from admin_handlers import (
+    ensure_user_exists, is_admin, admin_panel, add_admin_command,
+    grant_premium_command, ban_user_command, unban_user_command,
+    stats_command, user_info_command, my_status_command, handle_admin_callback
+)
+
+# Setup logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# Supported platforms
+SUPPORTED_PLATFORMS = [
+    'youtube.com', 'youtu.be', 'twitter.com', 'x.com', 'instagram.com',
+    'tiktok.com', 'vimeo.com', 'dailymotion.com', 'facebook.com',
+    'reddit.com', 'twitch.tv'
+]
+
+# Global executor for downloads
+executor = ThreadPoolExecutor(max_workers=1)
+
+# Ensure a token is configured before running
+if not BOT_TOKEN:
+    logger.warning("BOT_TOKEN is not set. Set it in the environment before starting the bot.")
+
+
+def setup_temp_directory():
+    """Create temporary directory for downloads if it doesn't exist."""
+    if not os.path.exists(TEMP_DIR):
+        os.makedirs(TEMP_DIR)
+        logger.info(f"Created temporary directory: {TEMP_DIR}")
+
+
+def cleanup_file(file_path):
+    """Clean up a specific file."""
+    try:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            logger.info(f"Cleaned up file: {file_path}")
+    except Exception as e:
+        logger.error(f"Error cleaning up file {file_path}: {e}")
+
+
+def is_valid_url(url):
+    """Check if the provided string is a valid URL."""
+    try:
+        result = urlparse(url)
+        return all([result.scheme, result.netloc])
+    except:
+        return False
+
+
+def is_direct_video_link(url):
+    """Check if URL is a direct video file link."""
+    try:
+        parsed = urlparse(url)
+        path = parsed.path.lower()
+        video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv', '.m4v']
+        return any(path.endswith(ext) for ext in video_extensions)
+    except:
+        return False
+
+
+def is_supported_platform(url):
+    """Check if the URL is from a supported platform or direct video link."""
+    try:
+        if is_direct_video_link(url):
+            return True
+
+        domain = urlparse(url).netloc.lower()
+        domain = re.sub(r'^www\.', '', domain)
+
+        for platform in SUPPORTED_PLATFORMS:
+            if platform in domain:
+                return True
+        return False
+    except:
+        return False
+
+
+def format_file_size(size_bytes):
+    """Convert bytes to human readable format."""
+    if size_bytes == 0:
+        return "0B"
+    size_names = ["B", "KB", "MB", "GB"]
+    i = 0
+    while size_bytes >= 1024 and i < len(size_names) - 1:
+        size_bytes /= 1024.0
+        i += 1
+    return f"{size_bytes:.1f}{size_names[i]}"
+
+
+def download_direct_video(url, user_id):
+    """Download direct video file with improved error handling."""
+    import requests
+    import tempfile
+    from urllib.parse import unquote
+    import time
+
+    user_dir = os.path.join(TEMP_DIR, str(user_id))
+    os.makedirs(user_dir, exist_ok=True)
+
+    parsed_url = urlparse(url)
+    filename = os.path.basename(unquote(parsed_url.path))
+    if not filename or '.' not in filename:
+        filename = "video.mp4"
+
+    file_path = os.path.join(user_dir, filename)
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'identity',
+        'Connection': 'keep-alive',
+    }
+
+    max_retries = 2
+    for attempt in range(max_retries):
         try:
-            __import__(module)
-        except ImportError:
-            missing_modules.append(module)
-    
-    if missing_modules:
-        print("❌ Missing required dependencies:")
-        for module in missing_modules:
-            if module == 'telegram':
-                print(f"  - {module} (install with: pip install python-telegram-bot)")
-            else:
-                print(f"  - {module} (install with: pip install {module})")
-        print("\nPlease install the missing dependencies and try again.")
-        return False
-    
-    return True
+            verify_ssl = attempt == 0
+            response = requests.get(
+                url,
+                headers=headers,
+                stream=True,
+                timeout=30,
+                verify=verify_ssl,
+                allow_redirects=True
+            )
+            response.raise_for_status()
 
-def check_bot_token():
-    """Check if bot token is configured."""
-    from config import BOT_TOKEN
-    
-    if not BOT_TOKEN or BOT_TOKEN == "your_bot_token_here":
-        print("❌ Bot token not configured!")
-        print("Please set the BOT_TOKEN environment variable or update config.py")
-        print("Example: export BOT_TOKEN='your_actual_bot_token'")
-        return False
-    
-    return True
+            content_length = response.headers.get('content-length')
+            if content_length and int(content_length) > MAX_FILE_SIZE:
+                raise Exception(f"Video file too large ({format_file_size(int(content_length))}). Maximum allowed: {format_file_size(MAX_FILE_SIZE)}")
+
+            with open(file_path, 'wb') as f:
+                downloaded = 0
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if downloaded > MAX_FILE_SIZE:
+                            raise Exception(f"Video file too large. Maximum allowed: {format_file_size(MAX_FILE_SIZE)}")
+
+            file_size = os.path.getsize(file_path)
+            if file_size == 0:
+                raise Exception("Downloaded file is empty")
+
+            return {
+                'file_path': file_path,
+                'title': os.path.splitext(filename)[0],
+                'size': file_size,
+                'duration': 0
+            }
+
+        except requests.exceptions.SSLError as e:
+            if attempt < max_retries - 1:
+                time.sleep(1)
+                continue
+            raise Exception(f"SSL connection failed: {str(e)}")
+        except requests.exceptions.ConnectionError as e:
+            if attempt < max_retries - 1:
+                time.sleep(2)
+                continue
+            raise Exception(f"Connection failed: {str(e)}")
+        except requests.exceptions.Timeout as e:
+            if attempt < max_retries - 1:
+                time.sleep(1)
+                continue
+            raise Exception(f"Download timeout: {str(e)}")
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(1)
+                continue
+            raise e
+
+    raise Exception("Download failed after multiple attempts")
+
+
+def download_video_sync(url, user_id):
+    """Synchronous download function."""
+    if is_direct_video_link(url):
+        return download_direct_video(url, user_id)
+
+    user_dir = os.path.join(TEMP_DIR, str(user_id))
+    os.makedirs(user_dir, exist_ok=True)
+
+    output_template = os.path.join(user_dir, '%(title)s.%(ext)s')
+
+    ydl_opts = {
+        'outtmpl': output_template,
+        'format': 'best[height<=480]/best',
+        'noplaylist': True,
+        'extract_flat': False,
+        'writethumbnail': True,
+        'writeinfojson': False,
+        'quiet': True,
+        'no_warnings': True,
+        'restrictfilenames': True,
+        'ignoreerrors': False,
+    }
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+        if not info:
+            raise Exception("Could not extract video information")
+
+        title = info.get('title', 'Unknown')
+        duration = info.get('duration', 0)
+
+        if duration and duration > 1800:
+            raise Exception(f"Video is too long ({duration//60} minutes). Maximum allowed: 30 minutes")
+
+        ydl.download([url])
+
+        downloaded_files = []
+        for file in os.listdir(user_dir):
+            file_path = os.path.join(user_dir, file)
+            if os.path.isfile(file_path):
+                downloaded_files.append(file_path)
+
+        if not downloaded_files:
+            raise Exception("No file was downloaded")
+
+        video_file = max(downloaded_files, key=os.path.getctime)
+
+        file_size = os.path.getsize(video_file)
+        if file_size > MAX_FILE_SIZE:
+            raise Exception(f"Video file too large ({format_file_size(file_size)}). Maximum allowed: {format_file_size(MAX_FILE_SIZE)}")
+
+        thumbnail_path = None
+        base_name = os.path.splitext(video_file)[0]
+        for ext in ['.jpg', '.jpeg', '.png', '.webp']:
+            thumb_file = base_name + ext
+            if os.path.exists(thumb_file):
+                thumbnail_path = thumb_file
+                break
+
+        return {
+            'file_path': video_file,
+            'title': title,
+            'size': file_size,
+            'duration': duration,
+            'thumbnail': thumbnail_path
+        }
+
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /start command with user management"""
+    user_id = str(update.effective_user.id)
+    username = update.effective_user.username
+    first_name = update.effective_user.first_name
+    last_name = update.effective_user.last_name
+
+    user = await ensure_user_exists(user_id, username, first_name, last_name)
+    is_admin_user = await is_admin(user_id)
+
+    welcome_text = f"""
+🎬 **Video Downloader Bot - Professional Edition**
+
+**Your Account:** {'⭐ Admin' if is_admin_user else '💎 Premium' if user.is_premium() else '👤 Normal User'}
+
+I can download videos from various platforms and send them directly to you.
+
+**Supported platforms:**
+• YouTube, Twitter/X, Instagram, TikTok
+• Vimeo, Facebook, Reddit, Twitch
+• Direct video file links (.mp4, .avi, .mov, etc.)
+
+**Your Limits:**
+{'• Unlimited downloads' if is_admin_user or user.is_premium() else '• 10 downloads per day'}
+{'• No cooldown' if is_admin_user or user.is_premium() else '• 3 minutes between downloads'}
+
+**Commands:**
+/start - Show this welcome message
+/help - Get help and usage instructions
+/status - Check your account status and limits
+/info <url> - Get video information without downloading
+{'🔧 /admin - Admin control panel' if is_admin_user else ''}
+
+Ready to download some videos? Send me a link! 🚀
+"""
+    await update.message.reply_text(welcome_text, parse_mode=ParseMode.MARKDOWN)
+
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle regular messages (video links) with rate limiting."""
+    message_text = update.message.text.strip()
+    user_id = str(update.effective_user.id)
+    username = update.effective_user.username
+    first_name = update.effective_user.first_name
+    last_name = update.effective_user.last_name
+    user_name = first_name or "User"
+
+    user = await ensure_user_exists(user_id, username, first_name, last_name)
+
+    if not is_valid_url(message_text):
+        await update.message.reply_text(
+            "Please send me a valid video link. Use /start to see supported platforms."
+        )
+        return
+
+    if not is_supported_platform(message_text):
+        await update.message.reply_text(
+            "❌ This platform is not currently supported.\n"
+            "Use /start to see the list of supported platforms."
+        )
+        return
+
+    db = get_db()
+    try:
+        user = db.query(User).filter(User.user_id == user_id).first()
+
+        can_download, reason = user.can_download()
+        if not can_download:
+            await update.message.reply_text(f"❌ {reason}")
+            return
+
+        logger.info(f"Processing download request from {user_name} (ID: {user_id}): {message_text}")
+        status_msg = await update.message.reply_text("🔄 Processing your request...")
+        await status_msg.edit_text("📥 Downloading video...")
+
+        loop = asyncio.get_event_loop()
+        result = await asyncio.wait_for(
+            loop.run_in_executor(executor, download_video_sync, message_text, user_id),
+            timeout=DOWNLOAD_TIMEOUT
+        )
+
+        await status_msg.edit_text("📤 Uploading video...")
+
+        file_path = result['file_path']
+        title = result['title']
+        file_size = result['size']
+        duration = result.get('duration', 0)
+
+        duration_str = f"{duration//60}:{duration%60:02d}" if duration else "Unknown"
+        caption = f"🎬 *{title}*\n📏 Size: {format_file_size(file_size)}\n⏱ Duration: {duration_str}"
+
+        thumbnail_path = result.get('thumbnail')
+
+        with open(file_path, 'rb') as video_file:
+            if thumbnail_path and os.path.exists(thumbnail_path):
+                try:
+                    with open(thumbnail_path, 'rb') as thumb_file:
+                        await update.message.reply_video(
+                            video=video_file,
+                            thumbnail=thumb_file,
+                            caption=caption,
+                            parse_mode=ParseMode.MARKDOWN,
+                            supports_streaming=True
+                        )
+                except Exception:
+                    await update.message.reply_video(
+                        video=video_file,
+                        caption=caption,
+                        parse_mode=ParseMode.MARKDOWN,
+                        supports_streaming=True
+                    )
+            else:
+                await update.message.reply_video(
+                    video=video_file,
+                    caption=caption,
+                    parse_mode=ParseMode.MARKDOWN,
+                    supports_streaming=True
+                )
+
+        user.record_download()
+        download_record = Download(
+            user_id=user_id,
+            url=message_text,
+            title=title,
+            file_size=file_size / (1024 * 1024),
+            download_type='platform' if not is_direct_video_link(message_text) else 'direct',
+            status='success'
+        )
+        db.add(download_record)
+        db.commit()
+
+        await status_msg.delete()
+        cleanup_file(file_path)
+        if thumbnail_path and os.path.exists(thumbnail_path):
+            cleanup_file(thumbnail_path)
+
+        logger.info(f"Successfully processed request for user {user_id}")
+
+    except asyncio.TimeoutError:
+        download_record = Download(
+            user_id=user_id,
+            url=message_text,
+            download_type='platform' if not is_direct_video_link(message_text) else 'direct',
+            status='failed',
+            error_message='Download timeout'
+        )
+        db.add(download_record)
+        db.commit()
+        logger.error(f"Download timeout for user {user_id}: {message_text}")
+        await status_msg.edit_text("❌ Download timed out. The video might be too large or the connection is slow.")
+    except Exception as e:
+        error_message = str(e)
+        logger.error(f"Error processing request for user {user_id}: {error_message}")
+
+        download_record = Download(
+            user_id=user_id,
+            url=message_text,
+            download_type='platform' if not is_direct_video_link(message_text) else 'direct',
+            status='failed',
+            error_message=error_message
+        )
+        db.add(download_record)
+        db.commit()
+
+        try:
+            user_dir = os.path.join(TEMP_DIR, str(user_id))
+            if os.path.exists(user_dir):
+                shutil.rmtree(user_dir)
+        except:
+            pass
+
+        await status_msg.edit_text(f"❌ {error_message}")
+    finally:
+        db.close()
+
+
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle errors."""
+    logger.error(f"Update {update} caused error {context.error}")
+
+    if update and update.effective_message:
+        await update.effective_message.reply_text(
+            "❌ An unexpected error occurred. Please try again later."
+        )
+
+
+def main():
+    """Main function to run the bot."""
+    if not BOT_TOKEN:
+        raise RuntimeError("BOT_TOKEN is required. Set it in your environment before starting the bot.")
+
+    setup_temp_directory()
+    init_db()
+    logger.info("Database initialized")
+
+    application = Application.builder().token(BOT_TOKEN).build()
+
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("help", start_command))
+    application.add_handler(CommandHandler("status", my_status_command))
+    application.add_handler(CommandHandler("admin", admin_panel))
+    application.add_handler(CommandHandler("addadmin", add_admin_command))
+    application.add_handler(CommandHandler("premium", grant_premium_command))
+    application.add_handler(CommandHandler("ban", ban_user_command))
+    application.add_handler(CommandHandler("unban", unban_user_command))
+    application.add_handler(CommandHandler("stats", stats_command))
+    application.add_handler(CommandHandler("userinfo", user_info_command))
+    application.add_handler(CallbackQueryHandler(handle_admin_callback))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_error_handler(error_handler)
+
+    logger.info("🤖 Starting Telegram Video Downloader Bot - Professional Edition...")
+    logger.info("📊 Mode: Polling")
+    application.run_polling(drop_pending_updates=True)
+
 
 if __name__ == "__main__":
-    print("🤖 Telegram Video Downloader Bot")
-    print("=" * 40)
-    
-    # Check dependencies
-    if not check_dependencies():
-        sys.exit(1)
-    
-    # Check bot token
-    if not check_bot_token():
-        sys.exit(1)
-    
-    # Print configuration info
-    webhook_url = os.getenv("WEBHOOK_URL")
-    if webhook_url:
-        port = os.getenv("PORT", 8000)
-        print(f"🌐 Mode: Webhook")
-        print(f"🔗 Webhook URL: {webhook_url}")
-        print(f"🚪 Port: {port}")
-    else:
-        print(f"📊 Mode: Polling")
-    
-    print(f"📁 Temp directory: temp_downloads")
-    print("=" * 40)
-    
-    try:
-        # Run the bot
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\n👋 Bot stopped gracefully")
-    except Exception as e:
-        print(f"\n❌ Fatal error: {e}")
-        sys.exit(1)
+    main()

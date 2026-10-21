@@ -1,0 +1,5 @@
+BOT_TOKEN=your_bot_token_here
+TEMP_DIR=temp_downloads
+PORT=8000
+WEBHOOK_URL=
+MAX_FILE_SIZE_MB=20
