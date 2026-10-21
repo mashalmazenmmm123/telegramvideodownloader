@@ -1,78 +1,35 @@
-#!/usr/bin/env python3
-"""
-Telegram Video Downloader Bot
-Entry point for running the bot
-"""
+# Telegram Video Downloader Bot
 
-import asyncio
-import sys
-import os
-from main import main
+This repository contains:
+- the original long-running Python Telegram bot in the root files
+- a small Vercel-compatible wrapper in `api/index.py`
 
+Important: The Telegram bot itself cannot run reliably on Vercel's free/serverless plan because it must stay alive continuously and write temporary media files locally.
 
-def check_dependencies():
-    """Check if all required dependencies are available."""
-    required_modules = ['telegram', 'yt_dlp']
-    missing_modules = []
+Recommended setup:
+- Bot runtime: Render / Railway / VPS
+- Frontend/health page: Vercel
 
-    for module in required_modules:
-        try:
-            __import__(module)
-        except ImportError:
-            missing_modules.append(module)
+## Vercel deployment
 
-    if missing_modules:
-        print("❌ Missing required dependencies:")
-        for module in missing_modules:
-            if module == 'telegram':
-                print(f"  - {module} (install with: pip install python-telegram-bot)")
-            else:
-                print(f"  - {module} (install with: pip install {module})")
-        print("\nPlease install the missing dependencies and try again.")
-        return False
+Vercel will deploy the wrapper in `api/index.py` and expose:
+- `/` for the status page
+- `/health` for health checks
+- `/status` for service metadata
 
-    return True
+## Production bot deployment
 
+Set these environment variables in your bot host (Render/Railway/VPS):
+- `BOT_TOKEN`
+- `TEMP_DIR=temp_downloads`
+- `PORT=8000`
 
-def check_bot_token():
-    """Check if bot token is configured."""
-    from config import BOT_TOKEN
+Then start the bot with:
 
-    if not BOT_TOKEN or BOT_TOKEN == "your_bot_token_here":
-        print("❌ Bot token not configured!")
-        print("Please set the BOT_TOKEN environment variable before starting the bot.")
-        print("Example: export BOT_TOKEN='your_actual_bot_token'")
-        return False
+```bash
+python run.py
+```
 
-    return True
-
-
-if __name__ == "__main__":
-    print("🤖 Telegram Video Downloader Bot")
-    print("=" * 40)
-
-    if not check_dependencies():
-        sys.exit(1)
-
-    if not check_bot_token():
-        sys.exit(1)
-
-    webhook_url = os.getenv("WEBHOOK_URL")
-    if webhook_url:
-        port = os.getenv("PORT", 8000)
-        print(f"🌐 Mode: Webhook")
-        print(f"🔗 Webhook URL: {webhook_url}")
-        print(f"🚪 Port: {port}")
-    else:
-        print(f"📊 Mode: Polling")
-
-    print(f"📁 Temp directory: {os.getenv('TEMP_DIR', 'temp_downloads')}")
-    print("=" * 40)
-
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\n👋 Bot stopped gracefully")
-    except Exception as e:
-        print(f"\n❌ Fatal error: {e}")
-        sys.exit(1)
+Important:
+- do not hardcode the Telegram token in source files
+- do not push secrets to GitHub
